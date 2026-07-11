@@ -20,5 +20,12 @@ Simply clone the repo and run the automation shortcut:
 ```bash
 make clean && make run
 ```
+
+### Showcase
+
+
+https://github.com/user-attachments/assets/d3728ce2-e2f3-4a65-b188-074a177b3b5a
+
+
 # WARNING!!!!!!
 This OS is meant to be run in QEMU and QEMU ***ONLY.*** Do **NOT** think you can run this onto your host. I am a solo developer, and i will **NOT** be adding support for x64 anytime soon.
