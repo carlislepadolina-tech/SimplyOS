@@ -1,3 +1,5 @@
+<img width="1408" height="768" alt="logo" src="https://github.com/user-attachments/assets/8d7ba969-ccc4-41e2-89a1-61dd4892e6c1" />
+
 # SimplyOS
 
 A lightweight, custom 32-bit x86 hobby operating system built from scratch using NASM assembly and C. It features a fully functional CLI environment driven by hardware-level port I/O, an ATA PIO disk reader, and a custom bootloader.
