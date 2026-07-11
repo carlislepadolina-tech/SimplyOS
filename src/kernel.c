@@ -36,7 +36,12 @@ int str_compare_n(const char* s1, const char* s2, int n) {
 volatile char* const text_vram = (volatile char*)0xB8000;
 int vram_offset = 0;
 unsigned char current_text_color = 0x0F; 
+
+// Keyboard Modifier & Prefix Tracking State
 int shift_pressed = 0;                   
+volatile int ctrl_pressed = 0;
+volatile int alt_pressed = 0;
+int extended_key = 0; 
 
 // --- TRANSLATION HELPER ---
 char translate_scancode(unsigned char scancode, int shift) {
@@ -116,39 +121,67 @@ void kernel_main(void) {
     while (1) {
         if (inb(0x64) & 0x01) {
             unsigned char scancode = inb(0x60);
-            if (scancode == 0x2A || scancode == 0x36) {
-                shift_pressed = 1;
+
+            // Catch Extended Byte Prefixes (e.g., Arrow Keys, Win Key)
+            if (scancode == 0xE0) {
+                extended_key = 1;
+                continue;
             }
-            else if (scancode == 0xAA || scancode == 0xB6) {
-                shift_pressed = 0;
+
+            // --- TRACK RELEASES (Break Codes) ---
+            if (scancode & 0x80) {
+                unsigned char released = scancode & 0x7F;
+                if (released == 0x2A || released == 0x36) shift_pressed = 0;
+                else if (released == 0x1D) ctrl_pressed = 0;
+                else if (released == 0x38) alt_pressed = 0;
+                
+                extended_key = 0;
             }
-            else if (!(scancode & 0x80)) { 
-                if (scancode == 0x1C) { 
-                    print_string("\n", current_text_color);
-                    input_buffer[buf_idx] = '\0';
-                    if (buf_idx > 0) {
-                        handle_cli_command(input_buffer);
-                    }
-                    print_string("> ", current_text_color);
-                    buf_idx = 0;
-                } 
-                else if (scancode == 0x0E) { 
-                    if (buf_idx > 0) {
-                        buf_idx--;
-                        vram_offset -= 2;
-                        text_vram[vram_offset] = ' ';
-                        text_vram[vram_offset + 1] = 0x07;
-                    }
+            // --- TRACK PRESSES (Make Codes) ---
+            else {
+                if (scancode == 0x2A || scancode == 0x36) {
+                    shift_pressed = 1;
                 }
+                else if (scancode == 0x1D) {
+                    ctrl_pressed = 1;
+                }
+                else if (scancode == 0x38) {
+                    alt_pressed = 1;
+                }
+                // Intercepting an Extended Key (Example: Windows GUI Trigger Key)
+                else if (extended_key && scancode == 0x5B) {
+                    print_string("[Win Key Detected]\n", 0x0E);
+                }
+                // Standard Processing Nodes
                 else {
-                    char c = translate_scancode(scancode, shift_pressed);
-                    if (c != 0 && buf_idx < 63) {
-                        input_buffer[buf_idx++] = c;
-                        text_vram[vram_offset] = c;
-                        text_vram[vram_offset + 1] = current_text_color;
-                        vram_offset += 2;
+                    if (scancode == 0x1C) { // Enter Key Handshake
+                        print_string("\n", current_text_color);
+                        input_buffer[buf_idx] = '\0';
+                        if (buf_idx > 0) {
+                            handle_cli_command(input_buffer);
+                        }
+                        print_string("> ", current_text_color);
+                        buf_idx = 0;
+                    } 
+                    else if (scancode == 0x0E) { // Backspace Destructor
+                        if (buf_idx > 0) {
+                            buf_idx--;
+                            vram_offset -= 2;
+                            text_vram[vram_offset] = ' ';
+                            text_vram[vram_offset + 1] = 0x07;
+                        }
+                    }
+                    else {
+                        char c = translate_scancode(scancode, shift_pressed);
+                        if (c != 0 && buf_idx < 63) {
+                            input_buffer[buf_idx++] = c;
+                            text_vram[vram_offset] = c;
+                            text_vram[vram_offset + 1] = current_text_color;
+                            vram_offset += 2;
+                        }
                     }
                 }
+                extended_key = 0; 
             }
             for (volatile int d = 0; d < 20000; d++);
         }
@@ -272,11 +305,11 @@ void handle_cli_command(const char* cmd) {
     for (int i = 0; cmd[i] != '\0'; i++) {
         if (cmd[i] == '>') {
             if (cmd[i+1] == '>') {
-                redirect_mode = 2; // Append Mode
+                redirect_mode = 2; 
                 op_idx = i;
                 break;
             } else {
-                redirect_mode = 1; // Overwrite Mode
+                redirect_mode = 1; 
                 op_idx = i;
                 break;
             }
@@ -333,12 +366,14 @@ void handle_cli_command(const char* cmd) {
     int is_echo       = str_compare_n(clean_cmd, "echo ", 5);
     int is_sysfetch   = str_compare_n(clean_cmd, "sysfetch", 8) && clean_cmd[8] == '\0';
     int is_init       = str_compare_n(clean_cmd, "init", 4) && clean_cmd[4] == '\0';
+    int is_rm         = str_compare_n(clean_cmd, "rm ", 3);
 
     if (is_help) {
         print_string("SimplyOS v1.0 (SimplyKrnl) Commands:\n", current_text_color);
         print_string("  echo <msg> [> filename]  - Print message or save to file (.txt/.sys)\n", current_text_color);
         print_string("  cat <file>               - View contents of file\n", current_text_color);
         print_string("  dir                      - List files\n", current_text_color);
+        print_string("  rm <file>                - Delete a file\n", current_text_color);
         print_string("  sysfetch                 - Display hardware system performance specs\n", current_text_color);
         print_string("  init                     - Format/Initialize the directory sector\n", current_text_color);
         print_string("  clear / matrix / reboot / shutdown\n", current_text_color);
@@ -462,6 +497,29 @@ void handle_cli_command(const char* cmd) {
         print_string("Initializing file system structure on Sector 100...\n", 0x0E);
         write_disk_sector(100, clear_buf);
         print_string("Disk directory initialized successfully. 2 slots ready.\n", 0x0A);
+    }
+    // --- RM (REMOVE/DELETE) COMMAND ---
+    else if (is_rm) {
+        char dir_buf[512];
+        read_disk_sector(100, dir_buf);
+        const char* target = &clean_cmd[3];
+        int slot_offset = -1;
+
+        if (dir_buf[0] >= 32 && str_compare_n(dir_buf, target, str_length(target))) {
+            slot_offset = 0;
+        } else if (dir_buf[40] >= 32 && str_compare_n(&dir_buf[40], target, str_length(target))) {
+            slot_offset = 40;
+        }
+
+        if (slot_offset >= 0) {
+            for (int i = 0; i < 40; i++) {
+                dir_buf[slot_offset + i] = 0;
+            }
+            write_disk_sector(100, dir_buf);
+            print_string("File deleted successfully.\n", 0x0A);
+        } else {
+            print_string("Error: File not found.\n", 0x0C);
+        }
     }
     else if (is_colorgreen) { current_text_color = 0x0A; print_string("Color updated to green.\n", current_text_color); }
     else if (is_colorwhite) { current_text_color = 0x0F; print_string("Color updated to white.\n", current_text_color); }
