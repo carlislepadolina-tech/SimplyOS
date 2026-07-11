@@ -135,7 +135,6 @@ void hardware_reboot(void) {
 }
 
 void hardware_shutdown(void) {
-    // Magic shutdown command for QEMU / Bochs
     outw(0x604, 0x2000);
     outw(0xB004, 0x2000);
     while(1) { __asm__ volatile("hlt"); }
@@ -161,18 +160,15 @@ void read_disk_sector(int lba, char* buffer) {
 // --- MATRIX EFFECT ---
 void matrix_effect(void) {
     clear_screen();
-    // Run effect for a short duration
     for (int loops = 0; loops < 60; loops++) {
         for (int i = 0; i < 80 * 25 * 2; i += 2) {
-            // Read timer port 0x40 for fake randomness
             unsigned char rand_char = (inb(0x40) % 94) + 33; 
-            // Only update some characters to create a falling effect
             if (inb(0x40) % 5 == 0) {
                 text_vram[i] = rand_char;
-                text_vram[i+1] = 0x0A; // Matrix Green
+                text_vram[i+1] = 0x0A; 
             }
         }
-        for (volatile int d = 0; d < 300000; d++); // Delay
+        for (volatile int d = 0; d < 300000; d++); 
     }
     clear_screen();
 }
@@ -188,6 +184,9 @@ void handle_cli_command(const char* cmd) {
     int is_matrix     = (cmd[0] == 'm' && cmd[1] == 'a' && cmd[2] == 't' && cmd[3] == 'r' && cmd[4] == 'i' && cmd[5] == 'x' && cmd[6] == '\0');
     int is_dir        = (cmd[0] == 'd' && cmd[1] == 'i' && cmd[2] == 'r' && cmd[3] == '\0');
     int is_cat        = (cmd[0] == 'c' && cmd[1] == 'a' && cmd[2] == 't' && cmd[3] == ' ' && cmd[4] != '\0');
+    
+    // Exact structural matching for echo command evaluating "echo "
+    int is_echo       = (cmd[0] == 'e' && cmd[1] == 'c' && cmd[2] == 'h' && cmd[3] == 'o' && cmd[4] == ' ' && cmd[5] != '\0');
 
     if (is_help) {
         print_string("SimplyOS v1.0 Commands:\n", current_text_color);
@@ -195,6 +194,7 @@ void handle_cli_command(const char* cmd) {
         print_string("  clear      - Wipe the terminal\n", current_text_color);
         print_string("  dir        - List files in root directory\n", current_text_color);
         print_string("  cat <file> - Use 'cat s' for secret, 'cat m' for motd\n", current_text_color);
+        print_string("  echo <msg> - Print custom string parameters out\n", current_text_color); // Documented!
         print_string("  colorgreen - Change terminal text to green\n", current_text_color);
         print_string("  colorwhite - Change terminal text to white\n", current_text_color);
         print_string("  matrix     - Run visual matrix effect\n", current_text_color);
@@ -208,19 +208,15 @@ void handle_cli_command(const char* cmd) {
         char buffer[512];
         for(int i=0; i<512; i++) buffer[i] = 0;
         
-        // Read Sector 100 where we injected the catalog entries
         read_disk_sector(100, buffer);
+        print_string("Root Directory:\n", 0x0E);
         
-        print_string("Root Directory:\n", 0x0E); // Yellow header
-        
-        // Entry 1 (Offset 0)
         if (buffer[0] != 0) {
-            print_string(&buffer[0], current_text_color); // secret.txt
+            print_string(&buffer[0], current_text_color);
             print_string(" (Sector 101)\n", 0x07);
         }
-        // Entry 2 (Offset 40)
         if (buffer[40] != 0) {
-            print_string(&buffer[40], current_text_color); // motd.sys
+            print_string(&buffer[40], current_text_color);
             print_string(" (Sector 102)\n", 0x07);
         }
     }
@@ -235,8 +231,14 @@ void handle_cli_command(const char* cmd) {
             read_disk_sector(102, buffer);
             print_string(buffer, current_text_color);
         } else {
-            print_string("Error: File not found.\n", 0x0C); // Red error
+            print_string("Error: File not found.\n", 0x0C);
         }
+        print_string("\n", current_text_color);
+    }
+    // --- ECHO EVALUATION NODE ---
+    else if (is_echo) {
+        // Point past "echo " (offset index 5) directly into your print function
+        print_string(&cmd[5], current_text_color);
         print_string("\n", current_text_color);
     }
     else if (is_colorgreen) {
