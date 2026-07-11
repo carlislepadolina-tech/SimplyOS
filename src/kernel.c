@@ -1,3 +1,7 @@
+// =============================================================================
+// SimplyOS Core Kernel — "SimplyKrnl"
+// =============================================================================
+
 // --- FORWARD DECLARATIONS ---
 static inline unsigned char inb(unsigned short port);
 static inline unsigned short inw(unsigned short port);
@@ -9,22 +13,46 @@ void clear_screen(void);
 void hardware_reboot(void);
 void hardware_shutdown(void);
 void read_disk_sector(int lba, char* buffer);
+void write_disk_sector(int lba, const char* buffer);
 void matrix_effect(void);
 
 // --- GLOBAL STATE ---
 volatile char* const text_vram = (volatile char*)0xB8000;
 int vram_offset = 0;
 unsigned char current_text_color = 0x0F; // Default White
+int shift_pressed = 0;                   // Global Shift tracking state
 
 // --- KERNEL ENTRY POINT ---
 void kernel_main(void) {
-    while (inb(0x64) & 0x01) { inb(0x60); }
+    clear_screen();
+    current_text_color = 0x0F;
 
+    // 1. Shell Boot Guard: Check if the PS/2 Keyboard Controller is responding
+    int timeout = 0;
+    int controller_failed = 0;
+    
+    while (inb(0x64) & 0x01) { 
+        inb(0x60); 
+        timeout++;
+        if (timeout > 50000) { 
+            controller_failed = 1;
+            break;
+        }
+    }
+
+    // 2. Evaluate if the initialization succeeded
+    if (controller_failed) {
+        print_string("An error uccured when trying to load the shell. (KEYBOARD_CONTROLLER_TIMEOUT)\n", 0x0C); 
+        while(1) { __asm__ volatile("hlt"); } 
+    }
+
+    // 3. Initialize working local buffers safely
     char input_buffer[64];
+    for (int i = 0; i < 64; i++) input_buffer[i] = 0;
     int buf_idx = 0;
     
-    clear_screen();
-    print_string("SimplyOS CLI [Full System Restored]\n", 0x0A);
+    // 4. Render the UI Shell Environment securely
+    print_string("SimplyOS CLI [SimplyKrnl Activated]\n", 0x0A);
     print_string("Type 'help' to see all commands.\n\n> ", current_text_color);
 
     // --- STANDARD CLI RECEIVE LOOP ---
@@ -32,7 +60,16 @@ void kernel_main(void) {
         if (inb(0x64) & 0x01) {
             unsigned char scancode = inb(0x60);
             
-            if (!(scancode & 0x80)) { 
+            // Track Shift Key Press
+            if (scancode == 0x2A || scancode == 0x36) {
+                shift_pressed = 1;
+            }
+            // Track Shift Key Release (Break Codes)
+            else if (scancode == 0xAA || scancode == 0xB6) {
+                shift_pressed = 0;
+            }
+            // Handle regular key presses
+            else if (!(scancode & 0x80)) { 
                 char c = 0;
                 
                 if (scancode == 0x1C) { // Enter Key
@@ -54,20 +91,33 @@ void kernel_main(void) {
                         text_vram[vram_offset + 1] = 0x07;
                     }
                 }
-                // Text translation map
-                else if (scancode == 0x10) c = 'q'; else if (scancode == 0x11) c = 'w';
-                else if (scancode == 0x12) c = 'e'; else if (scancode == 0x13) c = 'r';
-                else if (scancode == 0x14) c = 't'; else if (scancode == 0x15) c = 'y';
-                else if (scancode == 0x16) c = 'u'; else if (scancode == 0x17) c = 'i';
-                else if (scancode == 0x18) c = 'o'; else if (scancode == 0x19) c = 'p';
-                else if (scancode == 0x1E) c = 'a'; else if (scancode == 0x1F) c = 's';
-                else if (scancode == 0x20) c = 'd'; else if (scancode == 0x21) c = 'f';
-                else if (scancode == 0x22) c = 'g'; else if (scancode == 0x23) c = 'h';
-                else if (scancode == 0x24) c = 'j'; else if (scancode == 0x25) c = 'k';
-                else if (scancode == 0x26) c = 'l'; else if (scancode == 0x2C) c = 'z';
-                else if (scancode == 0x2D) c = 'x'; else if (scancode == 0x2E) c = 'c';
-                else if (scancode == 0x2F) c = 'v'; else if (scancode == 0x30) c = 'b';
-                else if (scancode == 0x31) c = 'n'; else if (scancode == 0x32) c = 'm';
+                // Case-Aware Text Translation Map
+                else if (scancode == 0x10) c = shift_pressed ? 'Q' : 'q';
+                else if (scancode == 0x11) c = shift_pressed ? 'W' : 'w';
+                else if (scancode == 0x12) c = shift_pressed ? 'E' : 'e';
+                else if (scancode == 0x13) c = shift_pressed ? 'R' : 'r';
+                else if (scancode == 0x14) c = shift_pressed ? 'T' : 't';
+                else if (scancode == 0x15) c = shift_pressed ? 'Y' : 'y';
+                else if (scancode == 0x16) c = shift_pressed ? 'U' : 'u';
+                else if (scancode == 0x17) c = shift_pressed ? 'I' : 'i';
+                else if (scancode == 0x18) c = shift_pressed ? 'O' : 'o';
+                else if (scancode == 0x19) c = shift_pressed ? 'P' : 'p';
+                else if (scancode == 0x1E) c = shift_pressed ? 'A' : 'a';
+                else if (scancode == 0x1F) c = shift_pressed ? 'S' : 's';
+                else if (scancode == 0x20) c = shift_pressed ? 'D' : 'd';
+                else if (scancode == 0x21) c = shift_pressed ? 'F' : 'f';
+                else if (scancode == 0x22) c = shift_pressed ? 'G' : 'g';
+                else if (scancode == 0x23) c = shift_pressed ? 'H' : 'h';
+                else if (scancode == 0x24) c = shift_pressed ? 'J' : 'j';
+                else if (scancode == 0x25) c = shift_pressed ? 'K' : 'k';
+                else if (scancode == 0x26) c = shift_pressed ? 'L' : 'l';
+                else if (scancode == 0x2C) c = shift_pressed ? 'Z' : 'z';
+                else if (scancode == 0x2D) c = shift_pressed ? 'X' : 'x';
+                else if (scancode == 0x2E) c = shift_pressed ? 'C' : 'c';
+                else if (scancode == 0x2F) c = shift_pressed ? 'V' : 'v';
+                else if (scancode == 0x30) c = shift_pressed ? 'B' : 'b';
+                else if (scancode == 0x31) c = shift_pressed ? 'N' : 'n';
+                else if (scancode == 0x32) c = shift_pressed ? 'M' : 'm';
                 else if (scancode == 0x39) c = ' '; // Spacebar
 
                 if (c != 0 && buf_idx < 63) {
@@ -157,6 +207,23 @@ void read_disk_sector(int lba, char* buffer) {
     }
 }
 
+// --- HARDWARE DISK WRITING (ATA PIO) ---
+void write_disk_sector(int lba, const char* buffer) {
+    outb(0x1F6, 0xE0 | ((lba >> 24) & 0x0F));
+    outb(0x1F2, 1);
+    outb(0x1F3, (unsigned char)lba);
+    outb(0x1F4, (unsigned char)(lba >> 8));
+    outb(0x1F5, (unsigned char)(lba >> 16));
+    outb(0x1F7, 0x30); 
+
+    while (!(inb(0x1F7) & 0x08));
+
+    unsigned short* ptr = (unsigned short*)buffer;
+    for (int i = 0; i < 256; i++) {
+        outw(0x1F0, ptr[i]);
+    }
+}
+
 // --- MATRIX EFFECT ---
 void matrix_effect(void) {
     clear_screen();
@@ -184,17 +251,17 @@ void handle_cli_command(const char* cmd) {
     int is_matrix     = (cmd[0] == 'm' && cmd[1] == 'a' && cmd[2] == 't' && cmd[3] == 'r' && cmd[4] == 'i' && cmd[5] == 'x' && cmd[6] == '\0');
     int is_dir        = (cmd[0] == 'd' && cmd[1] == 'i' && cmd[2] == 'r' && cmd[3] == '\0');
     int is_cat        = (cmd[0] == 'c' && cmd[1] == 'a' && cmd[2] == 't' && cmd[3] == ' ' && cmd[4] != '\0');
-    
-    // Exact structural matching for echo command evaluating "echo "
     int is_echo       = (cmd[0] == 'e' && cmd[1] == 'c' && cmd[2] == 'h' && cmd[3] == 'o' && cmd[4] == ' ' && cmd[5] != '\0');
+    int is_edit       = (cmd[0] == 'e' && cmd[1] == 'd' && cmd[2] == 'i' && cmd[3] == 't' && cmd[4] == ' ' && cmd[5] != '\0');
 
     if (is_help) {
-        print_string("SimplyOS v1.0 Commands:\n", current_text_color);
+        print_string("SimplyOS v1.0 (SimplyKrnl) Commands:\n", current_text_color);
         print_string("  help       - Show this list\n", current_text_color);
         print_string("  clear      - Wipe the terminal\n", current_text_color);
         print_string("  dir        - List files in root directory\n", current_text_color);
         print_string("  cat <file> - Use 'cat s' for secret, 'cat m' for motd\n", current_text_color);
-        print_string("  echo <msg> - Print custom string parameters out\n", current_text_color); // Documented!
+        print_string("  echo <msg> - Print custom string parameters out\n", current_text_color);
+        print_string("  edit <sec> - Write custom string directly into a disk sector\n", current_text_color);
         print_string("  colorgreen - Change terminal text to green\n", current_text_color);
         print_string("  colorwhite - Change terminal text to white\n", current_text_color);
         print_string("  matrix     - Run visual matrix effect\n", current_text_color);
@@ -235,11 +302,108 @@ void handle_cli_command(const char* cmd) {
         }
         print_string("\n", current_text_color);
     }
-    // --- ECHO EVALUATION NODE ---
     else if (is_echo) {
-        // Point past "echo " (offset index 5) directly into your print function
         print_string(&cmd[5], current_text_color);
         print_string("\n", current_text_color);
+    }
+    // --- TEXT EDITOR INTERACTION NODE ---
+    else if (is_edit) {
+        int target_sector = 0;
+        for (int i = 5; cmd[i] != '\0'; i++) {
+            if (cmd[i] >= '0' && cmd[i] <= '9') {
+                target_sector = target_sector * 10 + (cmd[i] - '0');
+            }
+        }
+
+        if (target_sector == 0) {
+            print_string("Error: Invalid sector target.\n", 0x0C);
+            return;
+        }
+
+        clear_screen();
+        print_string("--- SimplyOS Inline Buffer Editor ---\n", 0x0E);
+        print_string("Type your text and press ENTER to write to sector ", 0x07);
+        
+        char sec_str[4];
+        sec_str[0] = (target_sector / 100) + '0';
+        sec_str[1] = ((target_sector % 100) / 10) + '0';
+        sec_str[2] = (target_sector % 10) + '0';
+        sec_str[3] = '\0';
+        print_string(sec_str, 0x0A);
+        print_string("\n\n> ", 0x07);
+
+        char edit_buffer[512];
+        for (int i = 0; i < 512; i++) edit_buffer[i] = 0;
+        int edit_idx = 0;
+        int editing = 1;
+
+        while (editing) {
+            if (inb(0x64) & 0x01) {
+                unsigned char scancode = inb(0x60);
+                
+                if (scancode == 0x2A || scancode == 0x36) {
+                    shift_pressed = 1;
+                }
+                else if (scancode == 0x2A || scancode == 0xB6) {
+                    shift_pressed = 0;
+                }
+                else if (!(scancode & 0x80)) {
+                    char c = 0;
+                    
+                    if (scancode == 0x1C) { 
+                        edit_buffer[edit_idx] = '\0';
+                        editing = 0;
+                    }
+                    else if (scancode == 0x0E) { 
+                        if (edit_idx > 0) {
+                            edit_idx--;
+                            vram_offset -= 2;
+                            text_vram[vram_offset] = ' ';
+                            text_vram[vram_offset + 1] = 0x07;
+                        }
+                    }
+                    else if (scancode == 0x10) c = shift_pressed ? 'Q' : 'q';
+                    else if (scancode == 0x11) c = shift_pressed ? 'W' : 'w';
+                    else if (scancode == 0x12) c = shift_pressed ? 'E' : 'e';
+                    else if (scancode == 0x13) c = shift_pressed ? 'R' : 'r';
+                    else if (scancode == 0x14) c = shift_pressed ? 'T' : 't';
+                    else if (scancode == 0x15) c = shift_pressed ? 'Y' : 'y';
+                    else if (scancode == 0x16) c = shift_pressed ? 'U' : 'u';
+                    else if (scancode == 0x17) c = shift_pressed ? 'I' : 'i';
+                    else if (scancode == 0x18) c = shift_pressed ? 'O' : 'o';
+                    else if (scancode == 0x19) c = shift_pressed ? 'P' : 'p';
+                    else if (scancode == 0x1E) c = shift_pressed ? 'A' : 'a';
+                    else if (scancode == 0x1F) c = shift_pressed ? 'S' : 's';
+                    else if (scancode == 0x20) c = shift_pressed ? 'D' : 'd';
+                    else if (scancode == 0x21) c = shift_pressed ? 'F' : 'f';
+                    else if (scancode == 0x22) c = shift_pressed ? 'G' : 'g';
+                    else if (scancode == 0x23) c = shift_pressed ? 'H' : 'h';
+                    else if (scancode == 0x24) c = shift_pressed ? 'J' : 'j';
+                    else if (scancode == 0x25) c = shift_pressed ? 'K' : 'k';
+                    else if (scancode == 0x26) c = shift_pressed ? 'L' : 'l';
+                    else if (scancode == 0x2C) c = shift_pressed ? 'Z' : 'z';
+                    else if (scancode == 0x2D) c = shift_pressed ? 'X' : 'x';
+                    else if (scancode == 0x2E) c = shift_pressed ? 'C' : 'c';
+                    else if (scancode == 0x2F) c = shift_pressed ? 'V' : 'v';
+                    else if (scancode == 0x30) c = shift_pressed ? 'B' : 'b';
+                    else if (scancode == 0x31) c = shift_pressed ? 'N' : 'n';
+                    else if (scancode == 0x32) c = shift_pressed ? 'M' : 'm';
+                    else if (scancode == 0x39) c = ' ';
+
+                    if (c != 0 && edit_idx < 511) {
+                        edit_buffer[edit_idx++] = c;
+                        text_vram[vram_offset] = c;
+                        text_vram[vram_offset + 1] = current_text_color;
+                        vram_offset += 2;
+                    }
+                }
+                for (volatile int d = 0; d < 20000; d++);
+            }
+        }
+
+        write_disk_sector(target_sector, edit_buffer);
+        clear_screen();
+        print_string("Sector write complete! Returning to system console.\n\n", 0x0A);
     }
     else if (is_colorgreen) {
         current_text_color = 0x0A;
