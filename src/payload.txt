@@ -1,4 +1,0 @@
-== SIMPLYOS PERSISTENT SYSTEM INSTALLATION BLOB ==
-[KERNEL_CONFIG_OK]
-[BASE_UTILS_LOADED]
-If you can read this directly from hdd.img sectors later, the installer worked!

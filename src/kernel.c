@@ -20,7 +20,7 @@ void matrix_effect(void);
 // --- HELPER STRINGS ---
 int str_length(const char* str) {
     int len = 0;
-    while (str[len] != '\0') len++;
+    while (str[len] != '\0' && len < 64) len++; // Enforce safe structural ceiling
     return len;
 }
 
@@ -42,6 +42,11 @@ int shift_pressed = 0;
 volatile int ctrl_pressed = 0;
 volatile int alt_pressed = 0;
 int extended_key = 0; 
+
+// --- STATIC MEMORY BUFFERS ---
+static char global_sector_buffer[512];
+static char global_dir_buffer[512];
+static char global_file_buffer[512];
 
 // --- TRANSLATION HELPER ---
 char translate_scancode(unsigned char scancode, int shift) {
@@ -122,7 +127,6 @@ void kernel_main(void) {
         if (inb(0x64) & 0x01) {
             unsigned char scancode = inb(0x60);
 
-            // Catch Extended Byte Prefixes (e.g., Arrow Keys, Win Key)
             if (scancode == 0xE0) {
                 extended_key = 1;
                 continue;
@@ -134,8 +138,6 @@ void kernel_main(void) {
                 if (released == 0x2A || released == 0x36) shift_pressed = 0;
                 else if (released == 0x1D) ctrl_pressed = 0;
                 else if (released == 0x38) alt_pressed = 0;
-                
-                extended_key = 0;
             }
             // --- TRACK PRESSES (Make Codes) ---
             else {
@@ -148,11 +150,9 @@ void kernel_main(void) {
                 else if (scancode == 0x38) {
                     alt_pressed = 1;
                 }
-                // Intercepting an Extended Key (Example: Windows GUI Trigger Key)
                 else if (extended_key && scancode == 0x5B) {
                     print_string("[Win Key Detected]\n", 0x0E);
                 }
-                // Standard Processing Nodes
                 else {
                     if (scancode == 0x1C) { // Enter Key Handshake
                         print_string("\n", current_text_color);
@@ -162,8 +162,9 @@ void kernel_main(void) {
                         }
                         print_string("> ", current_text_color);
                         buf_idx = 0;
+                        for (int i = 0; i < 64; i++) input_buffer[i] = 0; // Clear immediately
                     } 
-                    else if (scancode == 0x0E) { // Backspace Destructor
+                    else if (scancode == 0x0E) { // Backspace
                         if (buf_idx > 0) {
                             buf_idx--;
                             vram_offset -= 2;
@@ -181,8 +182,8 @@ void kernel_main(void) {
                         }
                     }
                 }
-                extended_key = 0; 
             }
+            extended_key = 0; // Restructured to execute drop cycle perfectly
             for (volatile int d = 0; d < 20000; d++);
         }
     }
@@ -293,18 +294,19 @@ void matrix_effect(void) {
 void handle_cli_command(const char* cmd) {
     char clean_cmd[64];
     char file_target[32];
-    int redirect_mode = 0; // 0 = None, 1 = Overwrite (>), 2 = Append (>>)
+    int redirect_mode = 0; 
     int op_idx = -1;
+    int cmd_len = str_length(cmd);
 
     for (int i = 0; i < 64; i++) {
         clean_cmd[i] = 0;
         if (i < 32) file_target[i] = 0;
     }
 
-    // Step 1: Detect Redirection Symbols
-    for (int i = 0; cmd[i] != '\0'; i++) {
+    // Step 1: Detect Redirection Symbols safely
+    for (int i = 0; i < cmd_len && cmd[i] != '\0'; i++) {
         if (cmd[i] == '>') {
-            if (cmd[i+1] == '>') {
+            if (i + 1 < cmd_len && cmd[i+1] == '>') {
                 redirect_mode = 2; 
                 op_idx = i;
                 break;
@@ -316,22 +318,22 @@ void handle_cli_command(const char* cmd) {
         }
     }
 
-    // Step 2: Split Command and Target File
-    if (redirect_mode > 0) {
-        for (int i = 0; i < op_idx; i++) {
+    // Step 2: Split Command and Target File safely
+    if (redirect_mode > 0 && op_idx >= 0) {
+        for (int i = 0; i < op_idx && i < 63; i++) {
             clean_cmd[i] = cmd[i];
         }
-        int c_len = op_idx;
+        int c_len = str_length(clean_cmd);
         while (c_len > 0 && clean_cmd[c_len - 1] == ' ') {
             clean_cmd[c_len - 1] = '\0';
             c_len--;
         }
 
         int f_start = (redirect_mode == 2) ? op_idx + 2 : op_idx + 1;
-        while (cmd[f_start] == ' ') f_start++; 
+        while (f_start < cmd_len && cmd[f_start] == ' ') f_start++; 
         
         int f_idx = 0;
-        while (cmd[f_start] != '\0' && cmd[f_start] != ' ' && f_idx < 31) {
+        while (f_start < cmd_len && cmd[f_start] != '\0' && cmd[f_start] != ' ' && f_idx < 31) {
             file_target[f_idx++] = cmd[f_start++];
         }
         file_target[f_idx] = '\0';
@@ -350,10 +352,12 @@ void handle_cli_command(const char* cmd) {
             return;
         }
     } else {
-        for (int i = 0; cmd[i] != '\0'; i++) clean_cmd[i] = cmd[i];
+        for (int i = 0; i < cmd_len && i < 63; i++) clean_cmd[i] = cmd[i];
     }
 
-    // Step 3: Command Routing
+    int clean_len = str_length(clean_cmd);
+
+    // Step 3: Command Routing (Protected against missing arguments)
     int is_help       = str_compare_n(clean_cmd, "help", 4) && clean_cmd[4] == '\0';
     int is_clear      = str_compare_n(clean_cmd, "clear", 5) && clean_cmd[5] == '\0';
     int is_reboot     = str_compare_n(clean_cmd, "reboot", 6) && clean_cmd[6] == '\0';
@@ -362,11 +366,12 @@ void handle_cli_command(const char* cmd) {
     int is_colorwhite = str_compare_n(clean_cmd, "colorwhite", 10) && clean_cmd[10] == '\0';
     int is_matrix     = str_compare_n(clean_cmd, "matrix", 6) && clean_cmd[6] == '\0';
     int is_dir        = str_compare_n(clean_cmd, "dir", 3) && clean_cmd[3] == '\0';
-    int is_cat        = str_compare_n(clean_cmd, "cat ", 4);
-    int is_echo       = str_compare_n(clean_cmd, "echo ", 5);
     int is_sysfetch   = str_compare_n(clean_cmd, "sysfetch", 8) && clean_cmd[8] == '\0';
     int is_init       = str_compare_n(clean_cmd, "init", 4) && clean_cmd[4] == '\0';
-    int is_rm         = str_compare_n(clean_cmd, "rm ", 3);
+    
+    int is_cat        = (clean_len >= 4) && str_compare_n(clean_cmd, "cat ", 4);
+    int is_echo       = (clean_len >= 5) && str_compare_n(clean_cmd, "echo ", 5);
+    int is_rm         = (clean_len >= 3) && str_compare_n(clean_cmd, "rm ", 3);
 
     if (is_help) {
         print_string("SimplyOS v1.0 (SimplyKrnl) Commands:\n", current_text_color);
@@ -382,31 +387,46 @@ void handle_cli_command(const char* cmd) {
         clear_screen();
     }
     else if (is_dir) {
-        char buffer[512];
-        read_disk_sector(100, buffer);
+        read_disk_sector(100, global_sector_buffer);
         print_string("Root Directory:\n", 0x0E);
         
-        if (buffer[0] >= 32 && buffer[0] <= 126) { 
-            print_string(&buffer[0], current_text_color); print_string(" (Sector 101)\n", 0x07); 
-        } else { print_string("[Empty Slot A]\n", 0x08); }
-        
-        if (buffer[40] >= 32 && buffer[40] <= 126) { 
-            print_string(&buffer[40], current_text_color); print_string(" (Sector 102)\n", 0x07); 
-        } else { print_string("[Empty Slot B]\n", 0x08); }
+        for (int slot = 0; slot < 4; slot++) {
+            int offset = slot * 40;
+            if (global_sector_buffer[offset] >= 32 && global_sector_buffer[offset] <= 126) { 
+                print_string(&global_sector_buffer[offset], current_text_color); 
+                print_string(" (Sector ", 0x07);
+                
+                char sec_num[4];
+                sec_num[0] = '1';
+                sec_num[1] = '0';
+                sec_num[2] = (1 + slot) + '0';
+                sec_num[3] = '\0';
+                print_string(sec_num, 0x07);
+                print_string(")\n", 0x07);
+            } else { 
+                print_string("[Empty Slot ", 0x08);
+                char slot_letter[2] = { 'A' + slot, '\0' };
+                print_string(slot_letter, 0x08);
+                print_string("]\n", 0x08);
+            }
+        }
     }
     else if (is_cat) {
-        char buffer[512];
-        char dir_buf[512];
-        read_disk_sector(100, dir_buf);
+        read_disk_sector(100, global_dir_buffer);
         const char* target = &clean_cmd[4];
 
         int target_sector = 0;
-        if (str_compare_n(dir_buf, target, str_length(target))) target_sector = 101;
-        else if (str_compare_n(&dir_buf[40], target, str_length(target))) target_sector = 102;
+        for (int slot = 0; slot < 4; slot++) {
+            int offset = slot * 40;
+            if (global_dir_buffer[offset] >= 32 && str_compare_n(&global_dir_buffer[offset], target, str_length(target))) {
+                target_sector = 101 + slot;
+                break;
+            }
+        }
 
         if (target_sector > 0) {
-            read_disk_sector(target_sector, buffer);
-            print_string(buffer, current_text_color);
+            read_disk_sector(target_sector, global_sector_buffer);
+            print_string(global_sector_buffer, current_text_color);
             print_string("\n", current_text_color);
         } else {
             print_string("Error: File not found.\n", 0x0C);
@@ -416,106 +436,105 @@ void handle_cli_command(const char* cmd) {
         const char* msg = &clean_cmd[5];
 
         if (redirect_mode > 0) {
-            char dir_buf[512];
-            char file_buf[512];
-            read_disk_sector(100, dir_buf);
+            read_disk_sector(100, global_dir_buffer);
 
             int target_sector = 0;
-            int dir_slot_offset = 0;
+            int dir_slot_offset = -1;
 
-            int slotA_valid = (dir_buf[0] >= 32 && dir_buf[0] <= 126);
-            int slotB_valid = (dir_buf[40] >= 32 && dir_buf[40] <= 126);
-
-            if (slotA_valid && str_compare_n(dir_buf, file_target, str_length(file_target))) {
-                target_sector = 101;
-                dir_slot_offset = 0;
-            } else if (slotB_valid && str_compare_n(&dir_buf[40], file_target, str_length(file_target))) {
-                target_sector = 102;
-                dir_slot_offset = 40;
-            } else {
-                if (!slotA_valid) { target_sector = 101; dir_slot_offset = 0; }
-                else if (!slotB_valid) { target_sector = 102; dir_slot_offset = 40; }
+            for (int slot = 0; slot < 4; slot++) {
+                int offset = slot * 40;
+                if (global_dir_buffer[offset] >= 32 && str_compare_n(&global_dir_buffer[offset], file_target, str_length(file_target))) {
+                    target_sector = 101 + slot;
+                    dir_slot_offset = offset;
+                    break;
+                }
             }
 
             if (target_sector == 0) {
-                print_string("Error: Directory allocation full.\n", 0x0C);
+                for (int slot = 0; slot < 4; slot++) {
+                    int offset = slot * 40;
+                    if (!(global_dir_buffer[offset] >= 32 && global_dir_buffer[offset] <= 126)) {
+                        target_sector = 101 + slot;
+                        dir_slot_offset = offset;
+                        break;
+                    }
+                }
+            }
+
+            if (target_sector == 0) {
+                print_string("Error: Directory allocation full (4/4 slots used).\n", 0x0C);
                 return;
             }
 
-            for(int i=0; i<40; i++) dir_buf[dir_slot_offset + i] = 0;
+            for(int i = 0; i < 40; i++) global_dir_buffer[dir_slot_offset + i] = 0;
             for (int i = 0; file_target[i] != '\0' && i < 39; i++) {
-                dir_buf[dir_slot_offset + i] = file_target[i];
+                global_dir_buffer[dir_slot_offset + i] = file_target[i];
             }
-            write_disk_sector(100, dir_buf);
+            write_disk_sector(100, global_dir_buffer);
 
-            for (int i = 0; i < 512; i++) file_buf[i] = 0;
+            for (int i = 0; i < 512; i++) global_file_buffer[i] = 0;
             if (redirect_mode == 2) { 
-                read_disk_sector(target_sector, file_buf);
-                int existing_len = str_length(file_buf);
+                read_disk_sector(target_sector, global_file_buffer);
+                int existing_len = str_length(global_file_buffer);
                 for (int i = 0; msg[i] != '\0' && (existing_len + i) < 511; i++) {
-                    file_buf[existing_len + i] = msg[i];
+                    global_file_buffer[existing_len + i] = msg[i];
                 }
             } else { 
-                for (int i = 0; msg[i] != '\0' && i < 511; i++) file_buf[i] = msg[i];
+                for (int i = 0; msg[i] != '\0' && i < 511; i++) global_file_buffer[i] = msg[i];
             }
 
-            write_disk_sector(target_sector, file_buf);
+            write_disk_sector(target_sector, global_file_buffer);
             print_string("File updated successfully.\n", 0x0A);
         } else {
             print_string(msg, current_text_color);
             print_string("\n", current_text_color);
         }
     }
-    // --- SYSFETCH COMMAND ---
     else if (is_sysfetch) {
-        char dir_buf[512];
-        read_disk_sector(100, dir_buf);
+        read_disk_sector(100, global_dir_buffer);
         
-        int used_sectors = 1; 
-        if (dir_buf[0] >= 32 && dir_buf[0] <= 126) used_sectors++;
-        if (dir_buf[40] >= 32 && dir_buf[40] <= 126) used_sectors++;
+        int used_slots = 0; 
+        for (int slot = 0; slot < 4; slot++) {
+            if (global_dir_buffer[slot * 40] >= 32 && global_dir_buffer[slot * 40] <= 126) used_slots++;
+        }
 
         print_string("  #####    SimplyOS v1.0 (SimplyKrnl)\n", 0x0A);
         print_string(" #######   --------------------------\n", 0x0A);
         print_string(" ##   ##   OS Type: Bare-Metal x86 Kernel\n", current_text_color);
-        print_string(" #######   RAM Usage: 12 KB / 131072 KB (QEMU Default Footprint)\n", current_text_color);
+        print_string(" #######   RAM Usage: 12 KB / 131072 KB\n", current_text_color);
         
         print_string("  #####    Disk Space: ", current_text_color);
-        char disk_out[2];
-        disk_out[0] = used_sectors + '0';
-        disk_out[1] = '\0';
+        char disk_out[2] = { (used_slots) + '0', '\0' }; 
         print_string(disk_out, 0x0E);
-        print_string(" / 2880 Sectors (Floppy Map Mode)\n", current_text_color);
-        print_string("           Shell Mode: CLI Native (Redirection Enabled)\n\n", current_text_color);
+        print_string(" / 4 Sectors allocated (10MB HDD Mode)\n", current_text_color);
+        print_string("           Shell Mode: CLI Native (4-File Limit Enabled)\n\n", current_text_color);
     }
-    // --- INIT COMMAND ---
     else if (is_init) {
-        char clear_buf[512];
         for (int i = 0; i < 512; i++) {
-            clear_buf[i] = 0;
+            global_sector_buffer[i] = 0;
         }
         print_string("Initializing file system structure on Sector 100...\n", 0x0E);
-        write_disk_sector(100, clear_buf);
-        print_string("Disk directory initialized successfully. 2 slots ready.\n", 0x0A);
+        write_disk_sector(100, global_sector_buffer);
+        print_string("Disk directory initialized successfully. 4 slots ready.\n", 0x0A);
     }
-    // --- RM (REMOVE/DELETE) COMMAND ---
     else if (is_rm) {
-        char dir_buf[512];
-        read_disk_sector(100, dir_buf);
+        read_disk_sector(100, global_dir_buffer);
         const char* target = &clean_cmd[3];
         int slot_offset = -1;
 
-        if (dir_buf[0] >= 32 && str_compare_n(dir_buf, target, str_length(target))) {
-            slot_offset = 0;
-        } else if (dir_buf[40] >= 32 && str_compare_n(&dir_buf[40], target, str_length(target))) {
-            slot_offset = 40;
+        for (int slot = 0; slot < 4; slot++) {
+            int offset = slot * 40;
+            if (global_dir_buffer[offset] >= 32 && str_compare_n(&global_dir_buffer[offset], target, str_length(target))) {
+                slot_offset = offset;
+                break;
+            }
         }
 
         if (slot_offset >= 0) {
             for (int i = 0; i < 40; i++) {
-                dir_buf[slot_offset + i] = 0;
+                global_dir_buffer[slot_offset + i] = 0;
             }
-            write_disk_sector(100, dir_buf);
+            write_disk_sector(100, global_dir_buffer);
             print_string("File deleted successfully.\n", 0x0A);
         } else {
             print_string("Error: File not found.\n", 0x0C);

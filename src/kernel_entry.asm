@@ -1,20 +1,20 @@
 [bits 32]
-[extern kernel_main]
-
-section .text
 global _start
+extern kernel_main
 
 _start:
-    ; 1. Set up a safe, guaranteed stack pointer! 
-    ; Without this, the 'call' instruction crashes the CPU.
-    mov esp, 0x90000 
-    mov ebp, esp
+    cli                         ; <-- CRITICAL: Disable all hardware interrupts immediately!
     
-    ; 2. Safely call the C kernel
-    call kernel_main
+    ; Ensure your data registers match your GDT selector (usually 0x10)
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
     
-    ; 3. Catch-all hang if the kernel ever returns
-    cli
-.hang:
-    hlt
-    jmp .hang
+    call kernel_main            ; Execute C entry point
+    
+.halt_loop:
+    hlt                         ; Fallback safety lock
+    jmp .halt_loop
